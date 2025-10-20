@@ -1,0 +1,166 @@
+# ====== Importaciones ======
+import sys, time, os
+import cv2
+import numpy as np
+import pickle
+from keras_facenet import FaceNet
+from sklearn.preprocessing import LabelEncoder
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QMessageBox, QProgressBar, QFrame
+)
+from PyQt5.QtGui import QImage, QPixmap, QFont
+from PyQt5.QtCore import Qt, QTimer
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'
+
+# ====== Reconocimiento facial ======
+facenet = FaceNet()
+faces_embeddings = np.load("vectores_rostros_4personas.npz")
+Y = faces_embeddings['arr_1']
+encoder = LabelEncoder()
+encoder.fit(Y)
+haarcascade = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
+model = pickle.load(open("svm_model_160x160.pkl", 'rb'))
+
+class ProFaceAuth(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Sistema de Autenticación Segura")
+        self.showFullScreen()
+
+        # ====== GUI ======
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(100, 60, 100, 60)
+        layout.setSpacing(25)
+
+        self.title = QLabel("Sistema de Autenticación Segura")
+        self.title.setFont(QFont("Segoe UI", 34, QFont.Bold))
+        self.title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.title)
+
+        card = QFrame()
+        card.setStyleSheet("background-color: #111; border-radius: 20px;")
+        card_layout = QVBoxLayout(card)
+
+        self.video_label = QLabel()
+        self.video_label.setFixedSize(700, 450)
+        self.video_label.setAlignment(Qt.AlignCenter)
+        self.video_label.setStyleSheet("border-radius: 20px; background-color: black;")
+        card_layout.addWidget(self.video_label)
+        layout.addWidget(card, alignment=Qt.AlignCenter)
+
+        self.status = QLabel("Esperando detección...")
+        self.status.setFont(QFont("Segoe UI", 20))
+        self.status.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.status)
+
+        self.progress = QProgressBar()
+        self.progress.setValue(0)
+        self.progress.setVisible(False)
+        layout.addWidget(self.progress)
+
+        self.confirm_btn = QPushButton("Confirmar Identidad")
+        self.confirm_btn.setEnabled(False)
+        self.confirm_btn.setVisible(False)
+        self.confirm_btn.clicked.connect(self.confirm_identity)
+        layout.addWidget(self.confirm_btn, alignment=Qt.AlignCenter)
+
+        # ====== Cámara =======================================================================================================================================
+        self.cap = cv2.VideoCapture(0)
+        if not self.cap.isOpened():
+            QMessageBox.critical(self, "Error", "No se pudo acceder a la cámara.")
+            sys.exit(1)
+
+        # Timer para cámara
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update_frame)
+        self.timer.start(50)
+
+        # Timer para progreso
+        self.progress_timer = QTimer()
+        self.progress_timer.timeout.connect(self.update_progress)
+
+        # Estado de reconocimiento
+        self.final_name = "desconocido"
+
+    def update_frame(self):
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+
+        rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = haarcascade.detectMultiScale(gray, 1.3, 5)
+
+        if len(faces) > 0:
+            x, y, w, h = faces[0]
+            face = rgb_img[y:y+h, x:x+w]
+
+            try:
+                face_resized = cv2.resize(face, (160, 160))
+                face_resized = np.expand_dims(face_resized, axis=0)
+                ypred = facenet.embeddings(face_resized)
+                pred = model.predict(ypred)
+                self.final_name = encoder.inverse_transform(pred)[0]
+            except:
+                self.final_name = "desconocido"
+
+            if self.final_name != "desconocido" and not self.progress.isVisible():
+                self.status.setText(f"Rostro detectado: {self.final_name}")
+                self.status.setStyleSheet("color: #1abc9c;")
+                self.progress.setVisible(True)
+                self.progress.setValue(0)
+                self.progress_timer.start(70)
+            elif self.final_name == "desconocido":
+                self.status.setText("Desconocido")
+                self.status.setStyleSheet("color: red;")
+                self.progress.setVisible(False)
+                self.confirm_btn.setVisible(False)
+                self.confirm_btn.setEnabled(False)
+                self.progress_timer.stop()
+        else:
+            self.status.setText("Esperando detección...")
+            self.status.setStyleSheet("color: #ecf0f1;")
+            self.progress.setVisible(False)
+            self.confirm_btn.setVisible(False)
+            self.confirm_btn.setEnabled(False)
+            self.progress_timer.stop()
+
+        # Mostrar video
+        h, w, ch = rgb_img.shape
+        q_img = QImage(rgb_img.data, w, h, ch * w, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(q_img).scaled(
+            self.video_label.width(), self.video_label.height(),
+            Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        self.video_label.setPixmap(pixmap)
+
+    def update_progress(self):
+        value = self.progress.value() + 5
+        if value <= 100:
+            self.progress.setValue(value)
+        else:
+            self.progress_timer.stop()
+            self.status.setText("Verificación lista")
+            self.status.setStyleSheet("color: #27ae60;")
+            self.confirm_btn.setVisible(True)
+            self.confirm_btn.setEnabled(True)
+
+    def confirm_identity(self):
+        if self.final_name != "desconocido":
+            QMessageBox.information(self, "Acceso", f"Bienvenido {self.final_name}.")
+        else:
+            QMessageBox.warning(self, "Acceso denegado", "Identidad desconocida.")
+
+
+    def closeEvent(self, event):
+        self.cap.release()
+        self.timer.stop()
+        event.accept()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = ProFaceAuth()
+    window.show()
+    sys.exit(app.exec_())
