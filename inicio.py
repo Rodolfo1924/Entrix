@@ -1,16 +1,23 @@
 import sys
 import serial
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QPushButton
+import os
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
+    QFrame, QHBoxLayout, QGridLayout
+)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+
 from registro_rostros import RegistroAutomaticoUI
 from reconocimiento import ProFaceAuth
+from theme import STYLE_GLOBAL
 
-# ============================
-#   HILO DE ESCUCHA SERIAL
-# ============================
+
+# =========================================
+#   HILO SERIAL
+# =========================================
 class SerialListener(QThread):
-    start_signal = pyqtSignal()        # Se emite cuando llega "START"
-    status_signal = pyqtSignal(str)    # Para debug opcional
+    start_signal = pyqtSignal()
+    status_signal = pyqtSignal(str)
 
     def __init__(self, port="COM3", baud=115200):
         super().__init__()
@@ -24,7 +31,7 @@ class SerialListener(QThread):
             self.serial = serial.Serial(self.port, self.baud, timeout=1)
             self.status_signal.emit(f"Conectado a {self.port}")
         except Exception as e:
-            self.status_signal.emit(f"ERROR: No se pudo abrir {self.port}: {e}")
+            self.status_signal.emit(f"ERROR al abrir {self.port}: {e}")
             return
 
         while self.running:
@@ -34,7 +41,6 @@ class SerialListener(QThread):
                     self.status_signal.emit(f"Serial <- {line}")
 
                     if line.upper() == "START":
-                        self.status_signal.emit("Comando START recibido.")
                         self.start_signal.emit()
 
             except Exception as e:
@@ -52,52 +58,156 @@ class SerialListener(QThread):
         self.wait()
 
 
-# ============================
-#     INTERFAZ PRINCIPAL
-# ============================
+# =========================================
+#   INTERFAZ PRINCIPAL (DASHBOARD)
+# =========================================
 class InicioUI(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Bienvenido al sistema")
-        self.setFixedSize(800, 500)
+        self.setStyleSheet(STYLE_GLOBAL)
 
-        # ---- ESTILOS ----
-        self.setStyleSheet("""
-            QWidget { background: #7b2ff2; }
-            QLabel { color: white; font-size: 28px; font-weight: bold; }
-            QPushButton { background-color: #f357a8; color: white; font-size: 22px; border-radius: 10px; border: 2px solid #a4508b; padding: 16px; }
-            QPushButton:hover { background-color: #a4508b; }
-        """)
+        self.setWindowTitle("Sistema de Autenticación Facial")
+        self.setFixedSize(1100, 650)
 
-        layout = QVBoxLayout(self)
+        # ====================================
+        # ESTILO
+        # ====================================
+        
+        # ============================
+        #   LAYOUT GENERAL
+        # ============================
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(40, 40, 40, 40)
+        main_layout.setSpacing(25)
 
-        self.label = QLabel("Sistema de Autenticación Facial")
-        self.label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.label)
+        # ============================================================
+        #   COLUMNA IZQUIERDA — ACCIONES
+        # ============================================================
+        left_panel = QFrame()
+        left_panel.setObjectName("panel")
+        left_panel.setStyleSheet("QFrame#panel { background-color:#0f1622; border-radius:18px; border:2px solid #c0c7d1; }")
+        left_panel.setFixedWidth(330)
 
-        self.btn_registro = QPushButton("Registrar nuevo usuario")
-        self.btn_registro.clicked.connect(self.abrir_registro)
-        layout.addWidget(self.btn_registro)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(25, 25, 25, 25)
+        left_layout.setSpacing(30)
 
-        self.btn_reconocimiento = QPushButton("Iniciar reconocimiento (manual)")
-        self.btn_reconocimiento.clicked.connect(self.abrir_reconocimiento)
-        layout.addWidget(self.btn_reconocimiento)
+        title = QLabel("Menú Principal")
+        title.setProperty("class", "title")
+        left_layout.addWidget(title)
 
-        self.debug_label = QLabel("")
-        self.debug_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.debug_label)
+        # --- BOTONES ---
+        btn_reg = QPushButton("Registrar Nuevo Usuario")
+        btn_reg.clicked.connect(self.abrir_registro)
+        left_layout.addWidget(btn_reg)
 
-        # ==========================
-        #  INICIAR ESCUCHA SERIAL
-        # ==========================
+        btn_recon = QPushButton("Iniciar Reconocimiento")
+        btn_recon.clicked.connect(self.abrir_reconocimiento)
+        left_layout.addWidget(btn_recon)
+
+        # --- ESTADO SERIAL ---
+        self.debug_label = QLabel("Esperando conexión...")
+        self.debug_label.setProperty("class", "subtitle")
+        left_layout.addWidget(self.debug_label)
+
+        left_layout.addStretch()
+
+        main_layout.addWidget(left_panel)
+
+        # ============================================================
+        #   COLUMNA DERECHA — DASHBOARD
+        # ============================================================
+        dashboard = QFrame()
+        dashboard.setObjectName("panel")
+        dashboard.setStyleSheet("QFrame#panel { background-color:#0f1622; border-radius:18px; border:2px solid #c0c7d1; }")
+        
+        dash_layout = QVBoxLayout(dashboard)
+        dash_layout.setContentsMargins(30, 30, 30, 30)
+        dash_layout.setSpacing(25)
+
+        dash_title = QLabel("Dashboard del Sistema")
+        dash_title.setProperty("class", "title")
+        dash_layout.addWidget(dash_title)
+
+        # ------------------------
+        # TARJETAS
+        # ------------------------
+        grid = QGridLayout()
+        grid.setSpacing(20)
+
+        # Usuarios registrados
+        self.card_users = self.crear_card("Usuarios Registrados", self.contar_usuarios())
+        grid.addWidget(self.card_users, 0, 0)
+
+        # Último acceso
+        self.card_last = self.crear_card("Último usuario reconocido", "—")
+        grid.addWidget(self.card_last, 0, 1)
+
+        # Estado de cámara
+        cam_state = "Lista" if self.camara_detectada() else "No detectada"
+        self.card_cam = self.crear_card("Estado de cámara", cam_state)
+        grid.addWidget(self.card_cam, 1, 0)
+
+        # Estado del modelo
+        model_state = "Cargado" if os.path.exists("entrix/modelo/embeddings.npz") else "No entrenado"
+        self.card_model = self.crear_card("Estado del modelo", model_state)
+        grid.addWidget(self.card_model, 1, 1)
+
+        dash_layout.addLayout(grid)
+
+        main_layout.addWidget(dashboard)
+
+        # ============================
+        #   SERIAL
+        # ============================
         self.serial_thread = None
         self.iniciar_serial_listener()
 
+    # ============================================================
+    #   TARJETAS
+    # ============================================================
+    def crear_card(self, titulo, valor):
+        card = QFrame()
+        card.setObjectName("card")
+        card.setFixedSize(300, 120)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 15, 20, 15)
+
+        label_t = QLabel(titulo)
+        label_t.setProperty("class", "card-title")
+
+        label_v = QLabel(str(valor))
+        label_v.setProperty("class", "card-value")
+
+        layout.addWidget(label_t)
+        layout.addWidget(label_v)
+        layout.addStretch()
+
+        return card
+
+    # Lógica de conteo de usuarios
+    def contar_usuarios(self):
+        base = "entrix/rostros"
+        if not os.path.exists(base):
+            return 0
+        return len(os.listdir(base))
+
+    # Detección simple de cámara
+    def camara_detectada(self):
+        import cv2
+        cap = cv2.VideoCapture(0)
+        ok = cap.isOpened()
+        cap.release()
+        return ok
+
+    # ============================================================
+    #   INTERACCIONES
+    # ============================================================
     def update_debug(self, msg):
         self.debug_label.setText(msg)
 
     def handle_start(self):
-        print(">>> Recibido START desde ESP32 — iniciando reconocimiento")
         self.abrir_reconocimiento()
 
     def abrir_registro(self):
@@ -105,33 +215,31 @@ class InicioUI(QWidget):
         self.reg_win.show()
 
     def abrir_reconocimiento(self):
-        # Detiene el hilo serial y cierra puerto
         if self.serial_thread:
             self.serial_thread.stop()
 
-        # Abre la ventana de reconocimiento con callback
         self.recon_win = ProFaceAuth(onFinish=self.recon_done)
         self.recon_win.show()
-        self.hide()  # oculta inicio mientras se reconoce
+        self.hide()
 
     def recon_done(self, resultado):
-        print("Resultado:", resultado)
-        # Espera medio segundo antes de reiniciar el listener
+        # actualizar dashboard con el último usuario
+        self.card_last.findChildren(QLabel)[1].setText(resultado)
+
         QTimer.singleShot(500, self.iniciar_serial_listener)
-        # Vuelve a mostrar la ventana principal
         self.show()
 
+    # ============================================================
+    #   SERIAL
+    # ============================================================
     def iniciar_serial_listener(self):
         try:
             self.serial_thread = SerialListener(port="COM3", baud=115200)
             self.serial_thread.start_signal.connect(self.handle_start)
             self.serial_thread.status_signal.connect(self.update_debug)
             self.serial_thread.start()
-        except Exception as e:
-            print("Error al abrir COM3:", e)
-            # Reintenta después de 2 segundos
+        except Exception:
             QTimer.singleShot(8000, self.iniciar_serial_listener)
-
 
     def closeEvent(self, event):
         if self.serial_thread:
@@ -139,11 +247,12 @@ class InicioUI(QWidget):
         event.accept()
 
 
-# ============================
-#       EJECUCIÓN
-# ============================
+# =========================================
+#   RUN
+# =========================================
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = InicioUI()
     window.show()
+    
     sys.exit(app.exec_())
